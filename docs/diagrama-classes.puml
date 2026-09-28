@@ -1,0 +1,437 @@
+@startuml cinebridge-recomendacao
+title CineBridge — Microsserviço de Recomendação e Orquestração de Equipes
+subtitle Diagrama de Classes — Strategy, Template Method, Observer e Visitor
+
+skinparam classAttributeIconSize 0
+skinparam linetype ortho
+left to right direction
+
+' =====================================================================
+' CAMADA DE DOMÍNIO (sem dependências de framework)
+' =====================================================================
+package "domain" #E8F4FD {
+
+  enum Papel {
+    DIRETOR
+    DIRETOR_FOTOGRAFIA
+    SONOPLASTA
+    EDITOR
+    ROTEIRISTA
+    VFX
+  }
+
+  enum TipoCaptacao {
+    DOCUMENTARIO
+    FICCAO
+    ANIMACAO
+  }
+
+  enum StatusConvite {
+    PENDENTE
+    ACEITO
+    RECUSADO
+  }
+
+  enum NomeEstrategia {
+    SIMILARIDADE_COSSENO
+    FILTRAGEM_COLABORATIVA
+    ORCAMENTO_REDUZIDO
+  }
+
+  class VetorCompetencias <<value object>> {
+    +nivelDe(competencia: string): number
+    +dimensoes(): string[]
+    +similaridadeCosseno(outro: VetorCompetencias): number
+    +{static} criar(record: Map<string, number>): VetorCompetencias
+  }
+
+  class Localizacao <<value object>> {
+    +cidade: string
+    +uf: string
+    +pais: string
+    +afinidadeCom(outra: Localizacao): number
+  }
+
+  class IntervaloDatas <<value object>> {
+    +inicio: Date
+    +fim: Date
+    +contem(data: Date): boolean
+    +contemIntervalo(outro: IntervaloDatas): boolean
+    +sobrepoe(outro: IntervaloDatas): boolean
+  }
+
+  class Competencia <<entity>> {
+    +id: string
+    +nome: string
+    +categoria: string
+  }
+
+  class Profissional <<entity>> {
+    +id: string
+    +nome: string
+    +papeis: Papel[]
+    +competencias: VetorCompetencias
+    +precoMinimo: number
+    +precoMaximo: number
+    +disponibilidade: IntervaloDatas[]
+    +localizacao: Localizacao
+    +mediaAvaliacoes: number
+    +totalAvaliacoes: number
+    +atuaComo(papel: Papel): boolean
+    +cobraAte(teto: number): boolean
+    +estaDisponivelEm(periodo: IntervaloDatas): boolean
+    +afinidadeCom(profissionalId: string): number | undefined
+    +notaNormalizada(): number
+  }
+
+  class Avaliacao <<entity>> {
+    +id: string
+    +profissionalId: string
+    +projetoId: string
+    +nota: number
+    +comentario: string
+    +data: Date
+  }
+
+  class PapelRequerido <<entity>> {
+    +papel: Papel
+    +peso: number
+    +perfilDesejado?: VetorCompetencias
+  }
+
+  class Projeto <<entity / aggregate root>> {
+    +id: string
+    +genero: string
+    +duracaoEstimadaMinutos: number
+    +orcamentoTotal: number
+    +dataEntrega: Date
+    +tipoCaptacao: TipoCaptacao
+    +localizacaoFiltragens: Localizacao
+    +periodoFiltragens: IntervaloDatas
+    +papeisObrigatorios: PapelRequerido[]
+    +estrategiaPreferida?: NomeEstrategia
+    +aceitarVisitante(visitante: VisitanteProjeto): void
+  }
+
+  class MembroEquipe <<entity>> {
+    +papel: Papel
+    +profissional: Profissional
+    +custoAcordado: number
+    +status: StatusConvite
+    +aceitarVisitante(visitante: VisitanteProjeto): void
+  }
+
+  class Equipe <<entity / aggregate root>> {
+    +id: string
+    +projetoId: string
+    +membros: MembroEquipe[]
+    +status: StatusEquipe
+    +aceitarVisitante(visitante: VisitanteProjeto): void
+  }
+
+  class Recomendacao <<entity>> {
+    +id: string
+    +projetoId: string
+    +papel: Papel
+    +estrategiaUsada: NomeEstrategia
+    +candidatos: CandidatoRanqueado[]
+    +criadaEm: Date
+  }
+
+  class Convite <<entity>> {
+    +id: string
+    +projetoId: string
+    +profissionalId: string
+    +papel: Papel
+    +status: StatusConvite
+  }
+
+  Projeto *-- PapelRequerido
+  Projeto --> NomeEstrategia
+  Projeto --> TipoCaptacao
+  Projeto --> Localizacao
+  Projeto --> IntervaloDatas
+  Profissional *-- VetorCompetencias
+  Profissional *-- Localizacao
+  Profissional o-- IntervaloDatas
+  Equipe *-- MembroEquipe
+  MembroEquipe --> Profissional
+  Recomendacao --> Papel
+  Convite --> Papel
+
+  ' -------- Ports (inversão de dependência) --------
+  interface RepositorioProfissionais <<port>> {
+    +buscarPorPapel(papel: Papel): Promise<Profissional[]>
+    +buscarPorId(id: string): Promise<Profissional | null>
+  }
+  interface RepositorioProjetos <<port>>
+  interface RepositorioRecomendacoes <<port>>
+  interface RepositorioConvites <<port>>
+  interface BarramentoEventos <<port>> {
+    +publicar(evento: EventoDominio): void
+    +assinar(tipo: string, observador: ObservadorEvento): void
+  }
+}
+
+' =====================================================================
+' PADRÃO 1 — STRATEGY (application/recommendation)
+' =====================================================================
+package "application.recommendation" #FEF3E2 {
+
+  interface EstrategiaRecomendacao <<strategy>> {
+    +nome: NomeEstrategia
+    +ranquear(candidatos: Profissional[], contexto: ContextoRecomendacao): CandidatoRanqueado[]
+  }
+
+  class EstrategiaSimilaridadeCosseno <<concrete strategy>> {
+    ' score = w_sim*cosseno + w_aval*nota + w_custo*(1-custo) + w_loc*afinidade
+  }
+  class EstrategiaFiltragemColaborativa <<concrete strategy>> {
+    ' score = média bayesiana das avaliações + afinidade histórica c/ equipe parcial
+  }
+  class EstrategiaOrcamentoReduzido <<concrete strategy>> {
+    ' regra de negócio p/ baixo orçamento: peso dominante no custo + teto rígido
+  }
+
+  class FabricaEstrategias {
+    +resolverParaProjeto(projeto: Projeto): EstrategiaRecomendacao
+    +criar(nome: NomeEstrategia): EstrategiaRecomendacao
+  }
+
+  class MotorRecomendacao <<context>> {
+    -estrategia: EstrategiaRecomendacao
+    +trocarEstrategia(nova: EstrategiaRecomendacao): void
+    +recomendar(papel, candidatos, projeto, equipeParcial): CandidatoRanqueado[]
+    +tetoOrcamentalParaPapel(papel, projeto): number
+  }
+
+  class ParametrosRecomendacao <<value object>> {
+    +pesoSimilaridade: number
+    +pesoAvaliacao: number
+    +pesoCusto: number
+    +pesoLocalizacao: number
+    +fracaoOrcamentoEquipe: number
+    +limiarOrcamentoReduzido: number
+    +constanteSuavizacaoBayesiana: number
+    +mediaGlobalAvaliacoes: number
+    +pesoAfinidadeColaborativa: number
+    +tamanhoTop: number
+  }
+
+  class ContextoRecomendacao {
+    +projeto: Projeto
+    +perfilDesejado: VetorCompetencias
+    +tetoOrcamentalPapel: number
+    +parametros: ParametrosRecomendacao
+    +equipeParcial: Profissional[]
+  }
+
+  class CandidatoRanqueado {
+    +profissional: Profissional
+    +score: number
+    +detalhamento: Map<string, number>
+  }
+
+  EstrategiaSimilaridadeCosseno ..|> EstrategiaRecomendacao
+  EstrategiaFiltragemColaborativa ..|> EstrategiaRecomendacao
+  EstrategiaOrcamentoReduzido ..|> EstrategiaRecomendacao
+  MotorRecomendacao o--> EstrategiaRecomendacao : «estratégia corrente,\ntrocável em runtime»
+  FabricaEstrategias ..> EstrategiaRecomendacao : cria
+  MotorRecomendacao ..> ContextoRecomendacao : monta
+  ContextoRecomendacao o-- ParametrosRecomendacao
+  EstrategiaRecomendacao ..> CandidatoRanqueado
+}
+
+' =====================================================================
+' PADRÃO 2 — TEMPLATE METHOD (application/orchestration)
+' =====================================================================
+package "application.orchestration" #E9F7E9 {
+
+  abstract class OrquestradorComposicaoEquipe <<template method>> {
+    +{final} comporEquipe(projeto: Projeto): Promise<Equipe>
+    #{abstract} normalizarEntrada(projeto: Projeto): ProjetoNormalizado
+    #{abstract} validarRestricoesOrcamentarias(equipe, projeto): void
+    #{abstract} posProcessar(ranqueados, papel): CandidatoRanqueado[]
+    #buscarCandidatos(papel): Promise<Profissional[]>  ' c/ fallback
+    #gerarRecomendacoes(): Promise<Recomendacao[]>     ' passo invariante
+    #publicarEventos(equipe): void                     ' passo invariante
+  }
+
+  class OrquestradorEquipeDocumentario {
+    ' normalização: pautas longas; validação: reforça disponibilidade estendida
+  }
+  class OrquestradorEquipeFiccao {
+    ' pós-processamento: prioriza experiência prévia no gênero
+  }
+  class OrquestradorEquipeAnimacao {
+    ' normalização: localização irrelevante (remoto); validação: pós-produção pesada
+  }
+
+  class FabricaOrquestrador {
+    +resolver(tipoCaptacao: TipoCaptacao): OrquestradorComposicaoEquipe
+  }
+
+  OrquestradorEquipeDocumentario --|> OrquestradorComposicaoEquipe
+  OrquestradorEquipeFiccao --|> OrquestradorComposicaoEquipe
+  OrquestradorEquipeAnimacao --|> OrquestradorComposicaoEquipe
+  FabricaOrquestrador ..> OrquestradorComposicaoEquipe
+  OrquestradorComposicaoEquipe --> MotorRecomendacao
+  OrquestradorComposicaoEquipe --> RepositorioProfissionais
+  OrquestradorComposicaoEquipe --> BarramentoEventos
+}
+
+' =====================================================================
+' PADRÃO 3 — OBSERVER (infrastructure/events)
+' =====================================================================
+package "infrastructure.events" #F3E8FD {
+
+  class EventoDominio <<abstract>> {
+    +tipo: string
+    +ocorridoEm: Date
+    +carga: unknown
+  }
+  class RecomendacaoGerada <<evento>>
+  class ConviteCriado <<evento>>
+  class ConviteAceito <<evento>>
+  class ConviteRecusado <<evento>>
+  class EquipeFormada <<evento>>
+
+  interface ObservadorEvento <<observer>> {
+    +interessa(tipoEvento: string): boolean
+    +reagir(evento: EventoDominio): Promise<void>
+  }
+
+  class ObservadorEmail <<observer>> {
+    ' envia e-mail ao profissional (interesse) e ao produtor (aceite/recusa)
+  }
+  class ObservadorMensageriaInterna <<observer>> {
+    ' publica em fila/broker futuro (RabbitMQ) p/ ms-projetos e ms-financeiro
+  }
+  class ObservadorAuditoria <<observer>> {
+    ' grava log estruturado (pino) de TODAS as ações
+  }
+  class ObservadorAtualizacaoEquipe <<observer>> {
+    ' reage a ConviteAceito/Recusado atualizando o estado da equipe
+  }
+
+  class BarramentoEventosLocal <<adapter>> {
+    -emitter: EventEmitter
+    +publicar(evento: EventoDominio): void
+    +assinar(tipo: string, observador: ObservadorEvento): void
+  }
+
+  RecomendacaoGerada --|> EventoDominio
+  ConviteCriado --|> EventoDominio
+  ConviteAceito --|> EventoDominio
+  ConviteRecusado --|> EventoDominio
+  EquipeFormada --|> EventoDominio
+
+  BarramentoEventosLocal ..|> BarramentoEventos
+  BarramentoEventosLocal *-- EventEmitter : «nativo Node,\nsubstituível por RabbitMQ»
+  ObservadorEmail ..|> ObservadorEvento
+  ObservadorMensageriaInterna ..|> ObservadorEvento
+  ObservadorAuditoria ..|> ObservadorEvento
+  ObservadorAtualizacaoEquipe ..|> ObservadorEvento
+  BarramentoEventosLocal o--> ObservadorEvento : notifica todos\nindependentemente
+}
+
+' =====================================================================
+' PADRÃO 4 — VISITOR (application/visitors)
+' =====================================================================
+package "application.visitors" #FDECEC {
+
+  interface VisitanteProjeto <<visitor>> {
+    +visitarProjeto(projeto: Projeto): void
+    +visitarPapelRequerido(papel: PapelRequerido): void
+    +visitarMembroEquipe(membro: MembroEquipe): void
+    +visitarEquipe(equipe: Equipe): void
+  }
+
+  class ValidadorConsistenciaProjeto <<visitor>> {
+    ' papéis preenchidos, orçamento suficiente, prazo viável → lista de violações
+  }
+  class CalculadorCompatibilidadeEquipe <<visitor>> {
+    ' métrica agregada de compatibilidade (afinidade, sobreposição de skills)
+  }
+  class GeradorRelatorioProdutor <<visitor>> {
+    ' relatório textual/JSON p/ o produtor, sem tocar nas classes de domínio
+  }
+
+  ValidadorConsistenciaProjeto ..|> VisitanteProjeto
+  CalculadorCompatibilidadeEquipe ..|> VisitanteProjeto
+  GeradorRelatorioProdutor ..|> VisitanteProjeto
+  VisitanteProjeto <.. Projeto : aceitarVisitante(visitante)
+  VisitanteProjeto <.. Equipe : aceitarVisitante(visitante)
+  VisitanteProjeto <.. MembroEquipe : aceitarVisitante(visitante)
+  VisitanteProjeto <.. PapelRequerido : aceitarVisitante(visitante)
+}
+
+' =====================================================================
+' INFRAESTRUTURA & INTERFACE HTTP
+' =====================================================================
+package "infrastructure.persistence" #EEEEEE {
+  class PrismaRepositorioProfissionais <<adapter>>
+  class RepositorioProfissionaisResiliente <<fallback>> {
+    ' cache da última resposta + catálogo mínimo local
+    ' quando PostgreSQL/indisponível → recomendação parcial (graceful degradation)
+  }
+  PrismaRepositorioProfissionais ..|> RepositorioProfissionais
+  RepositorioProfissionaisResiliente ..|> RepositorioProfissionais
+  RepositorioProfissionaisResiliente o-- PrismaRepositorioProfissionais
+}
+
+package "interfaces.http" #EEEEEE {
+  class RecomendacaoController <<fastify>> {
+    +postRecomendacoes(req, reply)
+    +postConviteResposta(req, reply)
+    +postSubstituicao(req, reply)
+  }
+  class ServicoRecomendacao <<application service>> {
+    +recomendarEquipe(dto): Promise<EquipeRecomendadaDto>
+    +responderConvite(conviteId, resposta): Promise<void>
+    +substituirMembro(equipeId, papel): Promise<Recomendacao>
+  }
+  RecomendacaoController --> ServicoRecomendacao
+  ServicoRecomendacao --> FabricaEstrategias
+  ServicoRecomendacao --> FabricaOrquestrador
+  ServicoRecomendacao --> VisitanteProjeto : usa validador/relatório
+}
+
+note right of MotorRecomendacao
+  **STRATEGY**
+  Estratégia dinâmica: escolhida na criação
+  do projeto (Projeto.estrategiaPreferida) ou
+  pela regra automática da FabricaEstrategias
+  (orçamento < limiar → ORCAMENTO_REDUZIDO).
+  MotorRecomendacao aplica pré-filtros rígidos
+  (papel, disponibilidade, teto) e delega o
+  RANQUEAMENTO à estratégia corrente.
+end note
+
+note right of OrquestradorComposicaoEquipe
+  **TEMPLATE METHOD**
+  comporEquipe() é final e define o esqueleto:
+  normalizarEntrada → para cada papel:
+  buscarCandidatos → gerarRecomendacoes →
+  posProcessar → validarRestricoesOrcamentarias
+  → montarEquipe → publicarEventos.
+  Subclasses variam apenas os passos abstratos.
+end note
+
+note right of BarramentoEventosLocal
+  **OBSERVER**
+  EventEmitter nativo atrás da porta
+  BarramentoEventos → troca futura por
+  RabbitMQ não altera a lógica de negócio.
+  Observadores reagem de forma independente.
+end note
+
+note right of VisitanteProjeto
+  **VISITOR**
+  Double dispatch: elemento.aceitar(v) →
+  v.visitarX(elemento). Operações transversais
+  (validação, métrica, relatório) ficam fora
+  das classes de domínio.
+end note
+
+@enduml

@@ -1,0 +1,5 @@
+export enum StatusEquipe {
+  EM_FORMACAO = 'EM_FORMACAO',
+  FORMADA_PARCIAL = 'FORMADA_PARCIAL',
+  FORMADA = 'FORMADA',
+}

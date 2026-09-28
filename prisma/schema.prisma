@@ -1,0 +1,147 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum PapelPrisma {
+  DIRETOR
+  DIRETOR_FOTOGRAFIA
+  SONOPLASTA
+  EDITOR
+  ROTEIRISTA
+  VFX
+}
+
+enum TipoCaptacaoPrisma {
+  DOCUMENTARIO
+  FICCAO
+  ANIMACAO
+}
+
+enum StatusConvitePrisma {
+  PENDENTE
+  ACEITO
+  RECUSADO
+}
+
+enum StatusEquipePrisma {
+  EM_FORMACAO
+  FORMADA_PARCIAL
+  FORMADA
+}
+
+model Profissional {
+  id              String          @id @default(uuid())
+  nome            String
+  papeis          PapelPrisma[]
+  competencias    Json // Record<string, number> — vetor de competências 0..1
+  precoMinimo     Float
+  precoMaximo     Float
+  disponibilidade Json // Array<{ inicio: string, fim: string }>
+  cidade          String
+  uf              String
+  pais            String          @default("Brasil")
+  mediaAvaliacoes Float
+  totalAvaliacoes Int
+  afinidades      Json? // Record<string, number>
+  avaliacoes      Avaliacao[]
+  membros         MembroEquipe[]
+  convites        Convite[]
+}
+
+model Competencia {
+  id        String @id @default(uuid())
+  nome      String @unique
+  categoria String
+}
+
+model Projeto {
+  id                    String             @id
+  titulo                String?
+  genero                String
+  duracaoEstimadaMinutos Int
+  orcamentoTotal        Float
+  dataEntrega           DateTime
+  tipoCaptacao          TipoCaptacaoPrisma
+  cidade                String
+  uf                    String
+  pais                  String             @default("Brasil")
+  inicioFiltragens      DateTime
+  fimFiltragens         DateTime
+  estrategiaPreferida   String?
+  papeisObrigatorios    PapelRequeridoProjeto[]
+  recomendacoes         Recomendacao[]
+  equipes               Equipe[]
+  convites              Convite[]
+}
+
+model PapelRequeridoProjeto {
+  id             String       @id @default(uuid())
+  projetoId      String
+  projeto        Projeto      @relation(fields: [projetoId], references: [id])
+  papel          PapelPrisma
+  peso           Float
+  perfilDesejado Json?
+}
+
+model Avaliacao {
+  id             String       @id @default(uuid())
+  profissionalId String
+  profissional   Profissional @relation(fields: [profissionalId], references: [id])
+  projetoId      String
+  avaliadorId    String
+  nota           Float
+  comentario     String?
+  data           DateTime     @default(now())
+}
+
+model Recomendacao {
+  id              String       @id @default(uuid())
+  projetoId       String
+  projeto         Projeto      @relation(fields: [projetoId], references: [id])
+  papel           PapelPrisma
+  estrategiaUsada String
+  origemDados     String
+  candidatos      Json // Array<CandidatoRecomendado>
+  criadaEm        DateTime     @default(now())
+}
+
+model Equipe {
+  id        String            @id @default(uuid())
+  projetoId String
+  projeto   Projeto           @relation(fields: [projetoId], references: [id])
+  status    StatusEquipePrisma @default(EM_FORMACAO)
+  observacoes String[]
+  membros   MembroEquipe[]
+  convites  Convite[]
+}
+
+model MembroEquipe {
+  id                String             @id @default(uuid())
+  equipeId          String
+  equipe            Equipe             @relation(fields: [equipeId], references: [id])
+  papel             PapelPrisma
+  profissionalId    String
+  profissional      Profissional       @relation(fields: [profissionalId], references: [id])
+  custoAcordado     Float
+  scoreRecomendacao Float
+  status            StatusConvitePrisma @default(PENDENTE)
+}
+
+model Convite {
+  id             String              @id @default(uuid())
+  equipeId       String
+  equipe         Equipe              @relation(fields: [equipeId], references: [id])
+  projetoId      String
+  projeto        Projeto             @relation(fields: [projetoId], references: [id])
+  profissionalId String
+  profissional   Profissional        @relation(fields: [profissionalId], references: [id])
+  papel          PapelPrisma
+  status         StatusConvitePrisma @default(PENDENTE)
+  criadoEm       DateTime            @default(now())
+  respondidoEm   DateTime?
+}
